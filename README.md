@@ -1,5 +1,3 @@
-# QR Vault
-
 Generate dynamic payments in milliseconds.
 
 ## Features
