@@ -7,7 +7,7 @@ Generate dynamic payments in milliseconds.
 - **High Quality**: Instant, downloadable PNG codes.
 
 ## Getting Started
-1. `npm install`
+
 
 
 
