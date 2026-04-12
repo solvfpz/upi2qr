@@ -8,7 +8,4 @@ Generate dynamic payments in milliseconds.
 
 ## Getting Started
 
-
-
-
 Designed by [Manas Kale](https://t.me/obeiwn27)
