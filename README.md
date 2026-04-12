@@ -6,6 +6,4 @@ Generate dynamic payments in milliseconds.
 - **Privacy Focused**: No data stored. All QR generation happens locally.
 - **High Quality**: Instant, downloadable PNG codes.
 
-## Getting Started
-
 Designed by [Manas Kale](https://t.me/obeiwn27)
