@@ -8,6 +8,7 @@ Generate dynamic payments in milliseconds.
 
 ## Getting Started
 1. `npm install`
-2. `npm run dev`
+
+
 
 Designed by [Manas Kale](https://t.me/obeiwn27)
