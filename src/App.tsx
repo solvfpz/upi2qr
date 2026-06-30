@@ -1,8 +1,24 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Download, AlertCircle, CheckCircle2, Zap } from 'lucide-react';
+import type { AddressType, CryptoNetwork, RecentEntry } from './types';
+import RecentHistory from './components/RecentHistory';
 
-type AddressType = 'upi' | 'phone' | 'crypto';
-type CryptoNetwork = 'ltc' | 'usdt-trc20' | 'usdt-erc20';
+const STORAGE_KEY = 'qrHistory';
+const MAX_RECENTS = 5;
+
+function loadRecents(): RecentEntry[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw) as RecentEntry[];
+  } catch (_e) { void _e; }
+  return [];
+}
+
+function persistRecents(entries: RecentEntry[]) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+  } catch (_e) { void _e; }
+}
 
 const logoSvg = `data:image/svg+xml,%3Csvg viewBox='0 0 100 100' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100' height='100' rx='24' fill='%23091510'/%3E%3Crect x='22' y='22' width='20' height='20' rx='5' stroke='rgba(255,255,255,0.85)' stroke-width='3'/%3E%3Crect x='29' y='29' width='6' height='6' rx='1.5' fill='rgba(255,255,255,0.85)'/%3E%3Crect x='58' y='22' width='20' height='20' rx='5' stroke='rgba(255,255,255,0.85)' stroke-width='3'/%3E%3Crect x='65' y='29' width='6' height='6' rx='1.5' fill='rgba(255,255,255,0.85)'/%3E%3Crect x='22' y='58' width='20' height='20' rx='5' stroke='rgba(255,255,255,0.85)' stroke-width='3'/%3E%3Crect x='29' y='65' width='6' height='6' rx='1.5' fill='rgba(255,255,255,0.85)'/%3E%3Cpath d='M51 32 L31 53 L42 53 L36 71 L59 47 L47 47 Z' fill='%2334d399' stroke='%23091510' stroke-width='5' stroke-linejoin='round'/%3E%3C/svg%3E`;
 
@@ -18,6 +34,9 @@ function App() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [success, setSuccess] = useState('');
   const [qrUrl, setQrUrl] = useState('');
+  const [recents, setRecents] = useState<RecentEntry[]>([]);
+  const activePayloadRef = useRef<string | null>(null);
+  const lastSavedRef = useRef<string | null>(null);
 
   const validateUpiId = (id: string): boolean => {
     const upiRegex = /^[a-zA-Z0-9._-]+@[a-zA-Z0-9]+$/;
@@ -87,7 +106,7 @@ function App() {
     }
   };
 
-  const generateQrData = (): string | null => {
+  const generateQrData = useCallback((): string | null => {
     const newErrors: Record<string, string> = {};
 
     let paymentAddress = '';
@@ -147,58 +166,125 @@ function App() {
       qrData += `?amount=${amount}`;
     }
     return qrData;
-  };
+  }, [addressType, upiId, phoneNumber, cryptoAddress, merchantName, amount, note]);
+
+  useEffect(() => {
+    setRecents(loadRecents());
+  }, []);
+
+  const getModeLabel = useCallback((): string => {
+    switch (addressType) {
+      case 'upi': return 'UPI';
+      case 'phone': return 'Phone Pay';
+      case 'crypto': {
+        const detected = detectNetwork(cryptoAddress);
+        switch (detected) {
+          case 'ltc': return 'Litecoin';
+          case 'usdt-trc20':
+          case 'usdt-erc20': return 'USDT';
+          default: return 'Crypto';
+        }
+      }
+    }
+  }, [addressType, cryptoAddress]);
+
+  const addRecent = useCallback((payload: string) => {
+    const currentAddress = addressType === 'upi' ? upiId : addressType === 'phone' ? phoneNumber : cryptoAddress;
+    if (!currentAddress.trim() || !payload) return;
+    const entry: RecentEntry = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+      merchantName: merchantName.trim() || 'Payment',
+      address: currentAddress,
+      addressType,
+      amount,
+      note,
+      payload,
+      timestamp: Date.now(),
+    };
+    const next = [entry, ...recents.filter((r) => r.address !== currentAddress)].slice(0, MAX_RECENTS);
+    setRecents(next);
+    persistRecents(next);
+  }, [merchantName, addressType, upiId, phoneNumber, cryptoAddress, amount, note, recents]);
 
   useEffect(() => {
     const data = generateQrData();
     if (data) {
       const encoded = encodeURIComponent(data);
-      setQrUrl(`https://api.qrserver.com/v1/create-qr-code/?size=360x360&data=${encoded}&format=png&margin=10`);
+      const url = `https://api.qrserver.com/v1/create-qr-code/?size=360x360&data=${encoded}&format=png&margin=10`;
+      setQrUrl(url);
+      activePayloadRef.current = data;
     } else {
       setQrUrl('');
+      activePayloadRef.current = null;
     }
-  }, [merchantName, addressType, upiId, phoneNumber, cryptoAddress, amount, note]);
+  }, [generateQrData]);
 
-  const handleDownload = () => {
-    if (!qrUrl) return;
-    
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const data = generateQrData();
+      if (data && data !== lastSavedRef.current) {
+        lastSavedRef.current = data;
+        addRecent(data);
+      }
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [generateQrData, addRecent]);
+
+  const getQrImgUrl = useCallback((data: string, size = 360) => {
+    const encoded = encodeURIComponent(data);
+    return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encoded}&format=png&margin=10`;
+  }, []);
+
+  const handleGenerate = () => {
     const data = generateQrData();
     if (!data) return;
-
-    const encoded = encodeURIComponent(data);
-    const downloadUrl = `https://api.qrserver.com/v1/create-qr-code/?size=512x512&data=${encoded}&format=png&margin=10`;
-    
+    const downloadUrl = getQrImgUrl(data, 512);
     const link = document.createElement('a');
     link.href = downloadUrl;
-    link.download = merchantName.trim() 
+    link.download = merchantName.trim()
       ? `${addressType.toUpperCase()}-QR-${merchantName.replace(/\s+/g, '-')}.png`
       : `${addressType.toUpperCase()}-QR-Code.png`;
     link.click();
-
     setSuccess('QR Code downloaded successfully!');
     setTimeout(() => setSuccess(''), 3000);
   };
+
+  const handleDownload = () => {
+    const data = activePayloadRef.current || generateQrData();
+    if (!data) return;
+    const downloadUrl = getQrImgUrl(data, 512);
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = merchantName.trim()
+      ? `${addressType.toUpperCase()}-QR-${merchantName.replace(/\s+/g, '-')}.png`
+      : `${addressType.toUpperCase()}-QR-Code.png`;
+    link.click();
+    setSuccess('QR Code downloaded successfully!');
+    setTimeout(() => setSuccess(''), 3000);
+  };
+
+  const handleRecentClick = useCallback((entry: RecentEntry) => {
+    setErrors({});
+    setAddressType(entry.addressType);
+    setMerchantName(entry.merchantName);
+    if (entry.addressType === 'upi') setUpiId(entry.address);
+    else if (entry.addressType === 'phone') setPhoneNumber(entry.address);
+    else setCryptoAddress(entry.address);
+    setAmount(entry.amount);
+    setNote(entry.note);
+    setSuccess('');
+  }, []);
+
+  const handleClearRecents = useCallback(() => {
+    setRecents([]);
+    persistRecents([]);
+  }, []);
 
   const isFormValid = (
     (addressType === 'upi' && validateUpiId(upiId)) ||
     (addressType === 'phone' && validatePhoneNumber(phoneNumber)) ||
     (addressType === 'crypto' && validateCryptoAddress(cryptoAddress))
   ) && (!amount || validateAmount(amount));
-
-  const getModeLabel = (): string => {
-    switch (addressType) {
-      case 'upi': return 'UPI';
-      case 'phone': return 'Phone Pay';
-      case 'crypto': 
-        const detected = detectNetwork(cryptoAddress);
-        switch (detected) {
-          case 'ltc': return 'Litecoin';
-          case 'usdt-trc20': 
-          case 'usdt-erc20': return 'USDT';
-          default: return 'Crypto';
-        }
-    }
-  };
 
   const getSegmentIndex = (): number => {
     if (addressType === 'upi') return 0;
@@ -290,17 +376,33 @@ function App() {
                 <label className="field-label">
                   {getFieldLabel()}<span className="required">*</span>
                 </label>
-                <input
-                  type={addressType === 'phone' ? 'tel' : 'text'}
-                  value={getFieldValue()}
-                  onChange={(e) => setFieldValue(e.target.value)}
-                  placeholder={getFieldPlaceholder()}
-                  maxLength={addressType === 'phone' ? 10 : undefined}
-                  className={`glass-input ${addressType === 'crypto' ? 'mono' : ''}`}
-                  style={getFieldError() || (addressType === 'crypto' && isAddressTouched && cryptoAddress && !detectNetwork(cryptoAddress)) ? { borderColor: '#f87171' } : {}}
-                  onBlur={() => addressType === 'crypto' && setIsAddressTouched(true)}
-                  onFocus={() => addressType === 'crypto' && setIsAddressTouched(false)}
-                />
+                <div className="relative">
+                  <input
+                    type={addressType === 'phone' ? 'tel' : 'text'}
+                    value={getFieldValue()}
+                    onChange={(e) => setFieldValue(e.target.value)}
+                    placeholder={getFieldPlaceholder()}
+                    maxLength={addressType === 'phone' ? 10 : undefined}
+                    className={`glass-input ${addressType === 'crypto' ? 'mono' : ''} pr-8`}
+                    style={getFieldError() || (addressType === 'crypto' && isAddressTouched && cryptoAddress && !detectNetwork(cryptoAddress)) ? { borderColor: '#f87171' } : {}}
+                    onBlur={() => addressType === 'crypto' && setIsAddressTouched(true)}
+                    onFocus={() => addressType === 'crypto' && setIsAddressTouched(false)}
+                  />
+                  {getFieldValue() && (
+                    <button
+                      type="button"
+                      onClick={() => setFieldValue('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-full transition-colors"
+                      style={{ color: 'rgba(180, 230, 200, 0.4)' }}
+                      onMouseEnter={(e) => e.currentTarget.style.color = 'rgba(180, 230, 200, 0.8)'}
+                      onMouseLeave={(e) => e.currentTarget.style.color = 'rgba(180, 230, 200, 0.4)'}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
                 
                 {addressType === 'crypto' && detectNetwork(cryptoAddress) && (
                   <div className="mt-2 flex">
@@ -382,16 +484,16 @@ function App() {
             </div>
 
             <div className="card-footer">
-              <button
-                onClick={handleDownload}
-                disabled={!isFormValid}
-                className="btn-generate"
-              >
-                <span className="flex items-center justify-center gap-2">
-                  <Download size={16} />
-                  Generate & Download QR
-                </span>
-              </button>
+                <button
+                  onClick={handleGenerate}
+                  disabled={!isFormValid}
+                  className="btn-generate"
+                >
+                  <span className="flex items-center justify-center gap-2">
+                    <Download size={16} />
+                    Generate & Download QR
+                  </span>
+                </button>
             </div>
           </div>
 
@@ -400,9 +502,9 @@ function App() {
               QR Preview
             </h2>
 
-            <div className="flex flex-col items-center flex-1 justify-center min-h-[200px]">
+            <div className="flex flex-col flex-1 min-h-[200px]">
               {qrUrl ? (
-                <>
+                <div className="flex flex-col items-center justify-center flex-1">
                   <div className="qr-container mb-4">
                     <img src={qrUrl} alt="QR Code" />
                   </div>
@@ -423,10 +525,14 @@ function App() {
                     </p>
                   )}
 
-                  <button onClick={handleDownload} className="btn-download">
-                    <Download size={14} />
-                    Download PNG
-                  </button>
+                  <div className="flex justify-center">
+                    <button onClick={handleDownload} className="btn-download">
+                      <Download size={13} />
+                      Download PNG
+                    </button>
+                  </div>
+
+                  <RecentHistory recents={recents} onUseAgain={handleRecentClick} onClearAll={handleClearRecents} />
 
                   <div className="flex justify-center gap-3 mt-4">
                     <span className="trust-badge">
@@ -437,17 +543,31 @@ function App() {
                       No data stored
                     </span>
                   </div>
-                </>
+                </div>
               ) : (
-                <>
-                  <div className="qr-placeholder">
-                    <img src={logoSvg} alt="" className="opacity-[0.15]" style={{ width: '52px', height: '52px', borderRadius: '22%', objectFit: 'cover' }} />
-                    <p className="text-sm mt-3" style={{ color: 'rgba(180, 230, 200, 0.5)' }}>
+                <div className="flex flex-col flex-1">
+                  <div className="flex flex-col items-center justify-center pt-6 pb-2">
+                    <div style={{ position: 'relative', width: '84px', height: '84px', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px' }}>
+                      <span className="pulse-ring"></span>
+                      <span className="pulse-ring pulse-ring--delay"></span>
+                      <div className="pulse-center">
+                        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                          <rect x="7" y="7" width="3" height="3" />
+                          <rect x="14" y="7" width="3" height="3" />
+                          <rect x="7" y="14" width="3" height="3" />
+                          <rect x="14" y="14" width="3" height="3" />
+                        </svg>
+                      </div>
+                    </div>
+                    <p className="text-sm" style={{ color: 'rgba(180, 230, 200, 0.5)' }}>
                       Fill in the details to generate
                     </p>
                   </div>
 
-                  <div className="flex justify-center gap-3 mt-4">
+                  <RecentHistory recents={recents} onUseAgain={handleRecentClick} onClearAll={handleClearRecents} />
+
+                  <div className="flex justify-center gap-3 mt-auto pt-4">
                     <span className="trust-badge">
                       <Zap size={10} style={{ color: 'rgba(52, 211, 153, 0.6)' }} />
                       Instant QR
@@ -456,7 +576,7 @@ function App() {
                       No data stored
                     </span>
                   </div>
-                </>
+                </div>
               )}
             </div>
           </div>
